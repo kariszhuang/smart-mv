@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smv"
+version = "0.1.0"
+description = "Smart Move (smv) - AI-powered file organization tool"
+authors = [
+    {name = "karis", email = "xupingz613@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "openai>=1.0.0",
+    "pypdf>=3.0.0",
+    "pdf2image>=1.16.0",
+    "pillow>=9.0.0",
+]
+
+[project.scripts]
+smv = "smv.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
