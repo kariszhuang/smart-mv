@@ -3,11 +3,11 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "smv"
+name = "smart-mv"
 version = "0.1.0"
 description = "Smart Move (smv) - AI-powered file organization tool"
 authors = [
-    {name = "karis", email = "xupingz613@gmail.com"}
+    {name = "Karis Zhuang", email = "xupingz613@gmail.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.8"
