@@ -1,0 +1,54 @@
+name: Release to PyPI
+
+on:
+  push:
+    branches:
+      - main # main branch for releases
+    tags:
+      - "v*" # releases, e.g. v1.2.3
+      - "test-*" # test releases, e.g. test-0.1.0
+
+jobs:
+  build-and-publish:
+    name: Build & Publish
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write # for OIDC
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+
+      - name: Build release distributions
+        run: |
+          pip install build
+          python -m build
+
+      - name: Upload dists as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dists
+          path: dist/
+
+      - name: Download release distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dists
+          path: dist/
+
+      - name: Publish to Test PyPI
+        if: startsWith(github.ref, 'refs/tags/test-')
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: startsWith(github.ref, 'refs/tags/test-') == false
+        uses: pypa/gh-action-pypi-publish@release/v1
