@@ -1,10 +1,10 @@
 # 🧠 smart-mv — AI-powered File Organization Tool
 
-**smart-mv** (Smart Move) is an intelligent file organization tool that automatically classifies, renames, and organizes your files based on their **actual contents** — not just filenames. It makes the decision process of "where should this file go?" effortless by analyzing content, context, and your existing folder structure.
+`smart-mv` (Smart Move) is an intelligent file organization tool that automatically classifies, renames, and organizes your files based on their **actual contents** — not just filenames. It makes the decision process of "where should this file go?" effortless by analyzing content, context, and your existing folder structure.
 
 ## ✅ Key Features
 
-smart-mv goes beyond filenames. It reasons like a human:
+`smart-mv` goes beyond filenames. It reasons like a human:
 
 - **Analyzes textual and visual content** - Extracts and understands text from documents first, then falls back to visual analysis for PDFs and images when needed
 - **Matches files with your folder structure** - Finds the perfect location
@@ -41,9 +41,9 @@ smv -v
 
 ## 🧬 Real-World Example
 
-Model: Gemma3:12b
+Model: gemma3:12b
 
-Before:
+**Before**
 
 ```bash
 ~/Downloads/
@@ -56,7 +56,7 @@ Before:
 └── 2025-05-19.md                      # Markdown journal entry
 ```
 
-After:
+**After:**
 
 ```bash
 ~/Documents/
@@ -92,8 +92,13 @@ Moved:
 ```
 
 **Step 1:** Initial assessment notices it's a PDF in Downloads
-**Step 2:** Content analysis identifies handwritten equations and diagrams  
-**Step 3:** Extracts keywords: "solutions, homework, physics, equations"  
-**Step 4:** Searches folders, finds matching homework solutions directory  
-**Step 5:** Examines existing files in target location for naming patterns  
+
+**Step 2:** Content analysis identifies handwritten equations and diagrams
+
+**Step 3:** Extracts keywords: "solutions, homework, physics, equations"
+
+**Step 4:** Searches folders, finds matching homework solutions directory
+
+**Step 5:** Examines existing files in target location for naming patterns
+
 **Step 6:** Renames file to match pattern, maintaining consistency
