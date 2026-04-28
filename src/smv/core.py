@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 import time
 
 # Assuming smv is in PYTHONPATH or running from src/
-from smv import config
+from smv import config, providers, user_config
 from smv.analyzers.image_analyzer import ImageAnalyzer
 from smv.analyzers.text_analyzer import TextAnalyzer
 from smv.utils import command_utils, file_utils, llm_utils
@@ -18,17 +18,37 @@ class SmartMover:
     modules for specialized tasks like file analysis, command execution, and LLM interaction.
     """
 
-    def __init__(self, file_path_to_sort):
+    def __init__(self, file_path_to_sort, ai_settings=None):
         self.file_path = os.path.abspath(file_path_to_sort)
         if not os.path.exists(self.file_path):
             raise FileNotFoundError(f"File not found: {self.file_path}")
         if not os.path.isfile(self.file_path):
             raise ValueError(f"Path is not a file: {self.file_path}")
 
+        effective_ai_settings = dict(ai_settings or user_config.get_effective_ai_config())
+        provider = providers.get_provider(
+            effective_ai_settings.get("provider", config.DEFAULT_PROVIDER_ID)
+        )
+        model_name = effective_ai_settings.get("model") or provider.default_model
+        base_url = effective_ai_settings.get("base_url") or provider.default_base_url
+        api_key = effective_ai_settings.get("api_key") or provider.default_api_key
+        if provider.api_key_required and not api_key:
+            raise ValueError(
+                f"Provider '{provider.display_name}' requires an API key. Configure with `smv ai setup` or set {', '.join(provider.api_key_env_vars)}."
+            )
+
+        self.ai_settings = {
+            "provider": provider.id,
+            "model": model_name,
+            "base_url": base_url,
+            "api_key": api_key,
+        }
+
         self.llm_helper = llm_utils.LLMHelper(
-            api_key=config.OPENAI_API_KEY,
-            base_url=config.OPENAI_API_BASE_URL,
-            model_name=config.MODEL_NAME,
+            api_key=api_key or "",
+            base_url=base_url,
+            model_name=model_name,
+            provider_id=provider.id,
             max_retries=config.MAX_LLM_RETRIES_ON_PARSE_ERROR,
         )
         self.file_summary = "Not yet summarized."
@@ -107,8 +127,11 @@ class SmartMover:
     def step1_initial_decision(self):
         print("\n--- Step 1: Initial Action Decision ---")
         file_age_desc = file_utils.get_file_age_description(self.file_path)
+        file_age_days = file_utils.get_file_age_days(self.file_path)
         _, ext = os.path.splitext(self.file_path)
         ext = ext.lower()
+        parent_dir_lower = os.path.dirname(self.file_path).lower()
+        is_in_downloads = "/downloads" in parent_dir_lower
 
         archive_extracted_info = ""
         extracted_folder_path = file_utils.check_if_archive_extracted(
@@ -121,12 +144,29 @@ class SmartMover:
                 f"and the extracted folder is newer or the same age. This makes the original archive a strong candidate for Trash."
             )
 
+        if extracted_folder_path and file_age_days is not None and file_age_days >= 1:
+            reasoning = (
+                f"Archive appears already extracted into '{os.path.basename(extracted_folder_path)}' "
+                f"and is {file_age_days} day(s) old. Deterministically preferring Trash to avoid redundant LLM round-trip."
+            )
+            return {"action": "move_to_trash", "confidence": 0.95, "reasoning": reasoning}
+
         deletable_type_consideration = ""
         if ext in config.DELETABLE_CANDIDATE_EXTENSIONS:
             deletable_type_consideration = (
                 f"\nNote: This file type ({ext}) is often temporary or an installer. Its age ({file_age_desc}) "
                 f"is a strong factor for considering 'move_to_trash' if it's in a temporary location like 'Downloads' and not brand new."
             )
+            if is_in_downloads and file_age_days is not None and file_age_days >= 14:
+                reasoning = (
+                    f"Deterministic fast path: installer/temp file in Downloads aged {file_age_days} day(s), "
+                    "which is very likely safe to trash."
+                )
+                return {
+                    "action": "move_to_trash",
+                    "confidence": 0.92,
+                    "reasoning": reasoning,
+                }
 
         user_prompt_content = f"""
 {self.custom_instruction_prompt_addition}
@@ -564,6 +604,7 @@ Output XML, ensuring a single root tag `<search_parameters>`:
                     opts,
                     find_type="d",
                     excluded_patterns=config.EXCLUDED_DIRS_FIND_PATTERNS,
+                    max_depth=config.MAX_DEPTH_STEP5,
                 )
                 if cmd:
                     success, stdout, _ = command_utils.run_shell_command(cmd)
@@ -582,6 +623,7 @@ Output XML, ensuring a single root tag `<search_parameters>`:
                     find_type="f",
                     excluded_patterns=config.EXCLUDED_DIRS_FIND_PATTERNS,
                     print0=True,
+                    max_depth=config.MAX_DEPTH_STEP5,
                 )
                 if cmd:
                     success, stdout, _ = command_utils.run_shell_command(cmd)
@@ -1067,6 +1109,9 @@ Output XML, root tag `<final_action>`:
 
     def sort_file(self):
         print(f"\n--- Starting Smart Mover for: {self.file_path} ---")
+        print(
+            f"Using provider='{self.ai_settings['provider']}', model='{self.ai_settings['model']}'"
+        )
         self.llm_helper.update_context(
             f"Starting sort for '{os.path.basename(self.file_path)}' in '{os.path.dirname(self.file_path)}'."
         )

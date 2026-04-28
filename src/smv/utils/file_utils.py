@@ -46,6 +46,26 @@ def get_file_age_description(file_path: str) -> str:
         return "age unknown"
 
 
+def get_file_age_days(file_path: str) -> Optional[int]:
+    """
+    Get file age in whole days.
+
+    Args:
+        file_path (str): Path to the file.
+
+    Returns:
+        Optional[int]: Age in days or None if unavailable.
+    """
+    try:
+        mtime = os.path.getmtime(file_path)
+        file_mtime_dt = datetime.datetime.fromtimestamp(mtime)
+        now_dt = datetime.datetime.now()
+        return max((now_dt - file_mtime_dt).days, 0)
+    except Exception as e:
+        print(f"Could not get file age in days for {file_path}: {e}")
+        return None
+
+
 def are_files_identical(file1_path: str, file2_path: str) -> bool:
     """
     Compare two files for identical content using MD5 hashing.

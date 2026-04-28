@@ -5,7 +5,6 @@ Command utility functions for SMV.
 import os
 import subprocess
 from typing import List, Optional, Tuple
-import os
 
 
 def run_shell_command(
@@ -135,6 +134,7 @@ def build_find_command_parts(
     find_type: str = "f",
     excluded_patterns: Optional[List[str]] = None,
     print0: bool = False,
+    max_depth: Optional[int] = None,
 ) -> List[str]:
     """
     Build a find command for searching files or directories.
@@ -145,6 +145,7 @@ def build_find_command_parts(
         find_type (str): Type of item to find ('f' for files, 'd' for directories).
         excluded_patterns (Optional[List[str]]): Patterns to exclude.
         print0 (bool): Whether to use null terminators in output.
+        max_depth (Optional[int]): Max find depth to search.
 
     Returns:
         List[str]: Command parts for the find command.
@@ -158,6 +159,8 @@ def build_find_command_parts(
         return []
 
     cmd.extend(valid_search_paths)
+    if max_depth is not None and max_depth >= 0:
+        cmd.extend(["-maxdepth", str(max_depth)])
 
     # Use provided excluded patterns or default from config
     if excluded_patterns is None:

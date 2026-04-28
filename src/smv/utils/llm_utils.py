@@ -2,11 +2,33 @@
 LLM interaction utilities for SMV.
 """
 
+from __future__ import annotations
+
 import re
 import time
 import xml.etree.ElementTree as ET
-from typing import Optional, Any, Dict, List
+from typing import Any, Dict, List, Optional
+
 from openai import OpenAI
+
+
+def _flatten_message_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(str(item.get("text", "")))
+                elif item.get("type") == "image_url":
+                    parts.append("[image omitted]")
+                else:
+                    parts.append(str(item))
+            else:
+                parts.append(str(item))
+        return "\n".join(part for part in parts if part)
+    return str(content)
 
 
 class LLMHelper:
@@ -15,35 +37,28 @@ class LLMHelper:
     def __init__(
         self,
         api_key: str,
-        base_url: str,
+        base_url: Optional[str],
         model_name: str,
+        provider_id: str = "ollama",
         max_retries: int = 2,
         retry_delay: int = 2,
     ):
-        """
-        Initialize the LLM helper.
-
-        Args:
-            api_key (str): API key for the LLM service.
-            base_url (str): Base URL for the API.
-            model_name (str): Name of the model to use.
-            max_retries (int): Maximum number of retries for API calls.
-            retry_delay (int): Delay between retries in seconds.
-        """
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.provider_id = provider_id.strip().lower()
+        self.api_key = api_key
+        self.base_url = base_url
         self.model_name = model_name
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.current_context = ""
 
-    def update_context(self, new_info: str, is_user_hint: bool = False) -> None:
-        """
-        Update the current context for the LLM.
+        self.client = None
+        if self.provider_id in {"ollama", "openai"}:
+            kwargs: Dict[str, Any] = {"api_key": api_key}
+            if base_url:
+                kwargs["base_url"] = base_url
+            self.client = OpenAI(**kwargs)
 
-        Args:
-            new_info (str): New information to add to the context.
-            is_user_hint (bool): Whether the new info is a user hint.
-        """
+    def update_context(self, new_info: str, is_user_hint: bool = False) -> None:
         if new_info:
             prefix = (
                 "User's refinement hint: "
@@ -52,32 +67,141 @@ class LLMHelper:
             )
             self.current_context = f"{prefix}{new_info}"
 
+    def _call_openai_compatible(
+        self,
+        messages: List[Dict[str, Any]],
+        temperature: float,
+        max_tokens: int,
+    ) -> Optional[str]:
+        if self.client is None:
+            print("Error: OpenAI-compatible client is not initialized.")
+            return None
+
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        content = response.choices[0].message.content
+        return content.strip() if content else None
+
+    def _call_anthropic(
+        self,
+        messages: List[Dict[str, Any]],
+        temperature: float,
+        max_tokens: int,
+    ) -> Optional[str]:
+        try:
+            import anthropic
+        except ImportError:
+            print(
+                "Error: 'anthropic' package is not installed. Run `uv add anthropic`."
+            )
+            return None
+
+        system_parts: List[str] = []
+        anthropic_messages: List[Dict[str, str]] = []
+        for message in messages:
+            role = message.get("role", "user")
+            text_content = _flatten_message_content(message.get("content"))
+            if not text_content:
+                continue
+            if role == "system":
+                system_parts.append(text_content)
+                continue
+            anthropic_messages.append(
+                {"role": "assistant" if role == "assistant" else "user", "content": text_content}
+            )
+
+        if not anthropic_messages:
+            anthropic_messages = [{"role": "user", "content": "Please respond."}]
+
+        client = anthropic.Anthropic(api_key=self.api_key)
+        kwargs: Dict[str, Any] = {
+            "model": self.model_name,
+            "messages": anthropic_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if system_parts:
+            kwargs["system"] = "\n\n".join(system_parts)
+
+        response = client.messages.create(**kwargs)
+        content_parts = []
+        for block in response.content:
+            text_value = getattr(block, "text", None)
+            if text_value:
+                content_parts.append(text_value)
+        joined = "".join(content_parts).strip()
+        return joined or None
+
+    def _call_gemini(
+        self,
+        messages: List[Dict[str, Any]],
+        temperature: float,
+        max_tokens: int,
+    ) -> Optional[str]:
+        try:
+            import google.generativeai as genai
+        except ImportError:
+            print(
+                "Error: 'google-generativeai' package is not installed. Run `uv add google-generativeai`."
+            )
+            return None
+
+        prompt_parts = []
+        for message in messages:
+            role = message.get("role", "user").upper()
+            prompt_parts.append(f"{role}:\n{_flatten_message_content(message.get('content'))}")
+        final_prompt = "\n\n".join(part for part in prompt_parts if part.strip())
+        if not final_prompt.strip():
+            final_prompt = "Please respond."
+
+        genai.configure(api_key=self.api_key)
+        model = genai.GenerativeModel(self.model_name)
+        response = model.generate_content(
+            final_prompt,
+            generation_config={
+                "temperature": temperature,
+                "max_output_tokens": max_tokens,
+            },
+        )
+        text = getattr(response, "text", None)
+        if text:
+            return text.strip()
+
+        candidates = getattr(response, "candidates", None) or []
+        for candidate in candidates:
+            parts = (
+                getattr(getattr(candidate, "content", None), "parts", None) or []
+            )
+            collected = [getattr(part, "text", "") for part in parts if getattr(part, "text", None)]
+            if collected:
+                return "\n".join(collected).strip()
+        return None
+
     def call_llm(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         temperature: float = 0.1,
         max_tokens: int = 1000,
     ) -> Optional[str]:
-        """
-        Call the LLM API.
-
-        Args:
-            messages (List[Dict[str, str]]): Messages to send to the API.
-            temperature (float): Temperature parameter for generation.
-            max_tokens (int): Maximum tokens to generate.
-
-        Returns:
-            Optional[str]: The content of the LLM response, or None if an error occurred.
-        """
-        print("\n>>> Calling LLM...")
+        print(f"\n>>> Calling LLM ({self.provider_id}/{self.model_name})...")
         try:
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            content = response.choices[0].message.content.strip()
+            if self.provider_id in {"ollama", "openai"}:
+                content = self._call_openai_compatible(messages, temperature, max_tokens)
+            elif self.provider_id == "anthropic":
+                content = self._call_anthropic(messages, temperature, max_tokens)
+            elif self.provider_id == "gemini":
+                content = self._call_gemini(messages, temperature, max_tokens)
+            else:
+                raise ValueError(f"Unsupported provider '{self.provider_id}'")
+
+            if not content:
+                print("LLM response was empty.")
+                return None
+
             print(f"LLM Raw Response (first 300 chars):\n{content[:300]}...\n")
             return content
         except Exception as e:
@@ -87,16 +211,6 @@ class LLMHelper:
     def parse_xml_string(
         self, xml_string: Optional[str], expected_root_tag: Optional[str] = None
     ) -> Optional[ET.Element]:
-        """
-        Parse XML string from LLM response.
-
-        Args:
-            xml_string (Optional[str]): XML string to parse.
-            expected_root_tag (Optional[str]): Expected root tag of the XML.
-
-        Returns:
-            Optional[ET.Element]: Parsed XML element, or None if parsing failed.
-        """
         if xml_string is None:
             print("Error: XML string is None, cannot parse.")
             return None
@@ -105,7 +219,7 @@ class LLMHelper:
             return None
 
         try:
-            cleaned_xml_string = xml_string
+            cleaned_xml_string = xml_string.strip()
             if cleaned_xml_string.startswith("```xml"):
                 cleaned_xml_string = cleaned_xml_string[len("```xml") :]
             elif cleaned_xml_string.startswith("```"):
@@ -114,52 +228,37 @@ class LLMHelper:
                 cleaned_xml_string = cleaned_xml_string[: -len("```")]
             cleaned_xml_string = cleaned_xml_string.strip()
 
-            cleaned_xml_string = re.sub(r"\s+", " ", cleaned_xml_string).strip()
+            if expected_root_tag:
+                root_open_pattern = re.compile(
+                    rf"<{re.escape(expected_root_tag)}(?:\s[^>]*)?>",
+                    flags=re.IGNORECASE,
+                )
+                root_close_pattern = re.compile(
+                    rf"</{re.escape(expected_root_tag)}>",
+                    flags=re.IGNORECASE,
+                )
+                open_match = root_open_pattern.search(cleaned_xml_string)
+                close_match = root_close_pattern.search(cleaned_xml_string)
+                if open_match and close_match and open_match.start() < close_match.end():
+                    cleaned_xml_string = cleaned_xml_string[
+                        open_match.start() : close_match.end()
+                    ]
 
-            # Filter out invalid XML characters
-            temp_string_builder = []
-            for char_val in cleaned_xml_string:
-                cp = ord(char_val)
+            # Filter invalid XML characters
+            cleaned_xml_string = "".join(
+                ch
+                for ch in cleaned_xml_string
                 if (
-                    cp == 0x9
-                    or cp == 0xA
-                    or cp == 0xD
-                    or (0x20 <= cp <= 0xD7FF)
-                    or (0xE000 <= cp <= 0xFFFD)
-                    or (0x10000 <= cp <= 0x10FFFF)
-                ):
-                    temp_string_builder.append(char_val)
-            cleaned_xml_string = "".join(temp_string_builder)
+                    ord(ch) in (0x9, 0xA, 0xD)
+                    or (0x20 <= ord(ch) <= 0xD7FF)
+                    or (0xE000 <= ord(ch) <= 0xFFFD)
+                    or (0x10000 <= ord(ch) <= 0x10FFFF)
+                )
+            ).strip()
 
             if not cleaned_xml_string:
                 print("Error: XML string became empty after cleaning.")
                 return None
-
-            # Extract XML if it's embedded in other text
-            if not cleaned_xml_string.startswith(
-                "<"
-            ) or not cleaned_xml_string.endswith(">"):
-                print(f"Warning: Cleaned XML string may contain extraneous text.")
-                start_tag = "<"
-                end_tag = ">"
-
-                actual_start_tag = (
-                    f"<{expected_root_tag}" if expected_root_tag else start_tag
-                )
-                start_index = cleaned_xml_string.find(actual_start_tag)
-
-                actual_end_tag = (
-                    f"</{expected_root_tag}>" if expected_root_tag else None
-                )
-                end_index = -1
-
-                if actual_end_tag and start_index != -1:
-                    end_index = cleaned_xml_string.find(
-                        actual_end_tag, start_index
-                    ) + len(actual_end_tag)
-
-                if start_index != -1 and end_index != -1 and start_index < end_index:
-                    cleaned_xml_string = cleaned_xml_string[start_index:end_index]
 
             root = ET.fromstring(cleaned_xml_string)
             if expected_root_tag and root.tag != expected_root_tag:
@@ -167,7 +266,6 @@ class LLMHelper:
                     f"Warning: Expected root tag '{expected_root_tag}', but found '{root.tag}'"
                 )
             return root
-
         except ET.ParseError as e:
             print(
                 f"Error parsing XML: {e}\nAttempted to parse (after cleaning):\n{cleaned_xml_string[:500]}..."
@@ -179,27 +277,14 @@ class LLMHelper:
 
     def call_llm_and_parse_xml(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         expected_root_tag: str,
         max_tokens: int = 1000,
         step_name: str = "Unknown Step",
     ) -> Optional[ET.Element]:
-        """
-        Call LLM API and parse XML response with retry logic.
-
-        Args:
-            messages (List[Dict[str, str]]): Messages to send to the API.
-            expected_root_tag (str): Expected root tag of the response XML.
-            max_tokens (int): Maximum tokens to generate.
-            step_name (str): Name of the step for logging purposes.
-
-        Returns:
-            Optional[ET.Element]: Parsed XML element, or None if parsing failed after all retries.
-        """
         for attempt in range(self.max_retries + 1):
             current_messages = list(messages)
             if attempt > 0:
-                # Add retry hint if not the first attempt
                 retry_message = {
                     "role": "user",
                     "content": f"Please try again. Make sure to respond with valid XML with root tag <{expected_root_tag}>. "

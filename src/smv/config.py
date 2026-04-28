@@ -5,10 +5,16 @@ Constants and configuration settings for the SMV tool.
 import os
 from typing import Dict, List, Set, Tuple, Any
 
+from smv.providers import PROVIDER_ORDER, PROVIDERS
+
 # LLM Model Settings
-MODEL_NAME: str = "gemma3:12b"
-OPENAI_API_BASE_URL: str = "http://localhost:11434/v1"
-OPENAI_API_KEY: str = "ollama"
+DEFAULT_PROVIDER_ID: str = "ollama"
+SUPPORTED_PROVIDERS: Tuple[str, ...] = PROVIDER_ORDER
+MODEL_NAME: str = PROVIDERS[DEFAULT_PROVIDER_ID].default_model
+OPENAI_API_BASE_URL: str = (
+    PROVIDERS[DEFAULT_PROVIDER_ID].default_base_url or "http://localhost:11434/v1"
+)
+OPENAI_API_KEY: str = PROVIDERS[DEFAULT_PROVIDER_ID].default_api_key or "ollama"
 MAX_LLM_RETRIES_ON_PARSE_ERROR: int = 3
 LLM_TEMPERATURE: float = 0.1
 MAX_TOKENS_STEP1: int = 500  # Max tokens for initial decision
@@ -194,7 +200,7 @@ def check_dependencies() -> Tuple[bool, bool, bool]:
     except ImportError:
         pypdf_installed = False
         print(
-            "WARNING: pypdf not installed. PDF text extraction will be disabled. To enable: `pip install pypdf`"
+            "WARNING: pypdf not installed. PDF text extraction will be disabled. To enable: `uv add pypdf`"
         )
 
     # Check for Pillow
@@ -205,7 +211,7 @@ def check_dependencies() -> Tuple[bool, bool, bool]:
     except ImportError:
         pillow_installed = False
         print(
-            "WARNING: Pillow (PIL) not installed. Image processing will be disabled. To enable: `pip install Pillow`"
+            "WARNING: Pillow (PIL) not installed. Image processing will be disabled. To enable: `uv add pillow`"
         )
 
     # Check for pdf2image
