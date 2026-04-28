@@ -1,30 +1,100 @@
 # smart-mv
 
-`smart-mv` (`smv`) is an AI-powered file organizer that analyzes file content and suggests where to move files, how to rename them, and when to trash clutter.
+`smart-mv` helps you clean up messy folders by looking at what a file actually is, then suggesting the right place, the right name, or when it should just go to Trash.
 
-## Highlights
+Instead of sorting by filename alone, it uses file content, folder context, and your existing naming patterns so your files end up where they already make sense.
 
-- **Multi-provider AI setup** with persistent profile:
-  - **Ollama** (first in selection list)
-  - OpenAI
-  - Anthropic
-  - Google Gemini
-- **Model selection** per provider (with Ollama local model discovery).
-- **API key persistence** with OS keyring and explicit plaintext fallback.
-- **Faster sorting flow** with deterministic trash shortcuts and depth-limited search.
-- **Provider/model settings can be changed anytime** from CLI.
-- **Richer document understanding** with native `.docx` text extraction.
-- **Filesystem tool-calling (OpenAI/Ollama)** so AI can list directories and find files/folders during destination planning.
+## Why People Use It
 
-## Quick start
+- Turn a chaotic `Downloads` folder into an organized system
+- Rename vague files like `Document_20250419_0001.pdf` into something useful
+- Match the naming style already used in your folders
+- Catch old installers and obvious clutter before they pile up
+- Keep you in control when the choice is not obvious
 
-### Install
+## Quick Start
 
 ```bash
 pip install smart-mv
+smv ai setup
+smv /path/to/file.pdf
 ```
 
-or from source:
+If you use local models, `Ollama` is supported. OpenAI, Anthropic, and Gemini are also available.
+
+## What It Handles
+
+- PDFs
+- DOCX files
+- Text files
+- Images
+- Common clutter like old installers and temporary downloads
+
+## Demo 1: Homework PDF sorted and renamed
+
+**Before**
+
+```text
+~/Downloads/
+└── HWSolutions10.2025.pdf
+
+~/Documents/School/2025 Spring/PHYS 311/HW/Homework_Solutions/
+└── SolnsHmwk9_2025.pdf
+```
+
+**After**
+
+```text
+~/Documents/School/2025 Spring/PHYS 311/HW/Homework_Solutions/
+├── SolnsHmwk9_2025.pdf
+└── SolnsHmwk10_2025.pdf
+```
+
+`smart-mv` reads the file, figures out it is a physics homework solution set, finds the matching course folder, and renames it to fit the pattern already used there.
+
+## Demo 2: Downloads folder cleanup
+
+**Before**
+
+```text
+~/Downloads/
+├── label.pdf
+├── Document_20250419_0001.pdf
+└── HttpToolkit-1.19.3.dmg
+```
+
+**After**
+
+```text
+~/Documents/
+├── Legal Documents/
+│   ├── Passport_Page_20250419.pdf
+│   └── Receipts/
+│       └── Nike_Return_Label_1ZXXXXXXXXXXXXXXX.pdf
+
+~/.Trash/
+└── HttpToolkit-1.19.3.dmg
+```
+
+The return label gets renamed clearly, the passport scan is archived somewhere sensible, and the old installer is treated like clutter instead of living in `Downloads` forever.
+
+## Basic Commands
+
+```bash
+# Organize a file
+smv /path/to/file.pdf
+
+# Same thing, explicit form
+smv sort /path/to/file.pdf
+
+# Set up or change your AI provider
+smv ai setup
+
+# See current AI settings
+smv ai show
+```
+
+## Install From Source
 
 ```bash
 git clone https://github.com/kariszhuang/smart-mv.git
@@ -33,50 +103,6 @@ pip install -e .
 smv --version
 ```
 
-### Configure AI once
+## Python Version
 
-```bash
-smv ai setup
-```
-
-This interactive setup lets you choose provider, model, base URL (where applicable), and API key storage.
-
-### Organize a file
-
-```bash
-smv /path/to/file.pdf
-```
-
-## AI configuration commands
-
-```bash
-# Show current profile
-smv ai show
-
-# Interactive reconfiguration
-smv ai setup
-
-# Set provider/model/base URL directly
-smv ai set-provider ollama
-smv ai set-model gemma3:12b
-smv ai set-base-url http://localhost:11434/v1
-
-# Set API key (keyring by default; falls back to plaintext if needed)
-smv ai set-api-key --storage keyring
-
-# List suggested/discovered models
-smv ai list-models --provider ollama
-```
-
-## Development
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-python -m unittest discover -s tests -q
-```
-
-## Python version
-
-This project now targets **Python 3.10+**.
+Python `3.10+`
