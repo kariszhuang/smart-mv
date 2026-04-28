@@ -1,104 +1,78 @@
-# 🧠 smart-mv — AI-powered File Organization Tool
+# smart-mv
 
-`smart-mv` (Smart Move) is an intelligent file organization tool that automatically classifies, renames, and organizes your files based on their **actual contents** — not just filenames. It makes the decision process of "where should this file go?" effortless by analyzing content, context, and your existing folder structure.
+`smart-mv` (`smv`) is an AI-powered file organizer that analyzes file content and suggests where to move files, how to rename them, and when to trash clutter.
 
-## ✅ Key Features
+## Highlights
 
-`smart-mv` goes beyond filenames. It reasons like a human:
+- **Multi-provider AI setup** with persistent profile:
+  - **Ollama** (first in selection list)
+  - OpenAI
+  - Anthropic
+  - Google Gemini
+- **Model selection** per provider (with Ollama local model discovery).
+- **API key persistence** with OS keyring and explicit plaintext fallback.
+- **Faster sorting flow** with deterministic trash shortcuts and depth-limited search.
+- **Provider/model settings can be changed anytime** from CLI.
 
-- **Analyzes textual and visual content** - Extracts and understands text from documents first, then falls back to visual analysis for PDFs and images when needed
-- **Matches files with your folder structure** - Finds the perfect location
-- **Maintains naming consistency** - Follows existing patterns in target folders
-- **Removes clutter** - Identifies disposable files for trash
-- **Human-in-the-loop** - Asks for input when uncertain and accepts human hints for better suggestions
+## Quick start (uv-first)
 
-## 📥 Installation
-
-You can install smart-mv using pip:
-
-```bash
-# Install from PyPI
-pip install smart-mv
-
-# Or install directly from GitHub
-pip install git+https://github.com/kariszhuang/smart-mv.git
-```
-
-## 🚀 Usage
+### Install
 
 ```bash
-# Organize a single file
-smv /path/to/your/file.pdf
-
-# Get help
-smv --help
-
-# Show version
-smv -v
+uv tool install smart-mv
 ```
 
----
-
-## 🧬 Real-World Example
-
-Model: gemma3:12b
-
-**Before**
+or from source:
 
 ```bash
-~/Downloads/
-├── label.pdf                          # Nike return instructions
-├── Document_20250419_0001.pdf         # Scanned passport page
-├── HttpToolkit-1.19.3.dmg             # Installer
-├── HWSolutions10.2025.pdf             # Handwritten physics equations
-
-~/Documents/Notes/Journals/
-└── 2025-05-19.md                      # Markdown journal entry
+git clone https://github.com/kariszhuang/smart-mv.git
+cd smart-mv
+uv sync
+uv run smv --version
 ```
 
-**After:**
+### Configure AI once
 
 ```bash
-~/Documents/
-├── Legal Documents/
-│   ├── Receipts/
-│   │   └── Nike_Return_Label_1ZXXXXXXXXXXXXXXX.pdf   # Renamed w/ tracking placeholder
-│   └── Passport_Page_20250419.pdf                    # Archived passport scan
-│
-├── School/
-│   └── 2025 Spring/
-│       └── PHYS 311/
-│           └── HW/
-│               └── Homework_Solutions/
-│                   ├── SolnsHmwk9_2025.pdf           # Existing solution file
-│                   └── SolnsHmwk10_2025.pdf          # NEW — Renamed to match pattern
-│
-└── Notes/
-    └── Journals/
-        └── 2025-05-19.md                             # Recent journal — left in place
-
-~/.Trash/
-└── HttpToolkit-1.19.3.dmg                            # 3 months old installer — moved to Trash
+uv run smv ai setup
 ```
 
-e.g.
+This interactive setup lets you choose provider, model, base URL (where applicable), and API key storage.
+
+### Organize a file
 
 ```bash
-$ smv ~/Downloads/HWSolutions10.2025.pdf
-
-Moved:
-  From: /Users/<user>/Downloads/HWSolutions10.2025.pdf
-    To: /Users/<user>/Documents/School/.../Homework_Solutions/SolnsHmwk10_2025.pdf
+uv run smv /path/to/file.pdf
 ```
 
-**Step 1:** Initial assessment notices it's a PDF in Downloads
+## AI configuration commands
 
-**Step 2:** Content analysis identifies handwritten equations and diagrams
+```bash
+# Show current profile
+uv run smv ai show
 
-**Step 3:** Extracts keywords: "solutions, homework, physics, equations"
+# Interactive reconfiguration
+uv run smv ai setup
 
-**Step 4:** Searches folders, finds matching homework solutions directory
+# Set provider/model/base URL directly
+uv run smv ai set-provider ollama
+uv run smv ai set-model gemma3:12b
+uv run smv ai set-base-url http://localhost:11434/v1
 
-**Step 5:** Examines existing files in target location for naming patterns
+# Set API key (keyring by default; falls back to plaintext if needed)
+uv run smv ai set-api-key --storage keyring
 
-**Step 6:** Renames file to match pattern, maintaining consistency
+# List suggested/discovered models
+uv run smv ai list-models --provider ollama
+```
+
+## Development
+
+```bash
+uv sync
+uv run python -m unittest discover -s tests -q
+```
+
+## Python version
+
+This project now targets **Python 3.10+**.
