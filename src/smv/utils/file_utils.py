@@ -204,3 +204,92 @@ def execute_move(
 
     except Exception as e:
         return False, f"Error moving file: {str(e)}"
+
+
+import concurrent.futures
+import subprocess
+
+
+def fast_find(search_paths: List[str], keywords_str: str, find_type: str = "d", max_depth: int = 3, excluded_patterns: List[str] = None) -> List[str]:
+    """
+    Fast concurrent search using `fd` (rust) if available, falling back to os.scandir.
+    """
+    if excluded_patterns is None:
+        from smv import config
+        excluded_patterns = config.EXCLUDED_DIRS_FIND_PATTERNS
+
+    keywords = [kw.strip().lower() for kw in keywords_str.split(',')] if keywords_str else []
+    results = set()
+
+    fd_bin = shutil.which("fdfind") or shutil.which("fd")
+    if fd_bin:
+        for p in search_paths:
+            if not os.path.isdir(p): continue
+            cmd = [fd_bin, "--type", find_type, "--absolute-path", "--color", "never", "--hidden"]
+            if max_depth is not None and max_depth >= 0:
+                cmd.extend(["--max-depth", str(max_depth)])
+            for ex in excluded_patterns:
+                cmd.extend(["--exclude", ex])
+            cmd.append("--")
+            if keywords:
+                cmd.append(".*(" + "|".join(keywords) + ").*")
+            else:
+                cmd.append(".*")
+            cmd.append(p)
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True)
+                if res.returncode == 0:
+                    for line in res.stdout.splitlines():
+                        if line.strip():
+                            if find_type == "f":
+                                results.add(os.path.dirname(os.path.normpath(line.strip())))
+                            else:
+                                results.add(os.path.normpath(line.strip()))
+            except Exception:
+                pass
+        if results:
+            return list(results)
+
+    def scan_dir(path: str, current_depth: int):
+        if max_depth is not None and current_depth > max_depth:
+            return
+        try:
+            with os.scandir(path) as it:
+                for entry in it:
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                    if is_dir and any(ex in entry.name for ex in excluded_patterns):
+                        continue
+
+                    if (find_type == "d" and is_dir) or (find_type == "f" and entry.is_file(follow_symlinks=False)):
+                        match = not keywords or any(kw in entry.name.lower() for kw in keywords)
+                        if match:
+                            if find_type == "f":
+                                results.add(os.path.dirname(os.path.normpath(entry.path)))
+                            else:
+                                results.add(os.path.normpath(entry.path))
+
+                    if is_dir:
+                        scan_dir(entry.path, current_depth + 1)
+        except PermissionError:
+            pass
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = [executor.submit(scan_dir, p, 1) for p in search_paths if os.path.isdir(p)]
+        concurrent.futures.wait(futures)
+
+    return list(results)
+
+
+def get_sample_files(folder_path: str, max_samples: int = 3) -> List[str]:
+    """Get a few sample files from a directory to help LLM context."""
+    samples = []
+    try:
+        with os.scandir(folder_path) as it:
+            for entry in it:
+                if entry.is_file(follow_symlinks=False) and not entry.name.startswith('.'):
+                    samples.append(entry.name)
+                    if len(samples) >= max_samples:
+                        break
+    except Exception:
+        pass
+    return samples

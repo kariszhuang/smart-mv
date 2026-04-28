@@ -1,8 +1,10 @@
 import os
 import re
 import argparse
+import json
 import xml.etree.ElementTree as ET
 import time
+from typing import Any, Dict, List
 
 # Assuming smv is in PYTHONPATH or running from src/
 from smv import config, providers, user_config
@@ -73,6 +75,8 @@ class SmartMover:
         expected_root_tag,
         max_tokens_for_call,
         step_name="Unknown Step",
+        tools=None,
+        tool_handler=None,
     ):
         """
         Calls LLM and parses XML, with retries on parsing failure.
@@ -104,6 +108,9 @@ class SmartMover:
                 current_messages,
                 temperature=config.LLM_TEMPERATURE,
                 max_tokens=max_tokens_for_call,
+                tools=tools,
+                tool_handler=tool_handler,
+                max_tool_rounds=config.MAX_LLM_TOOL_CALLS_PER_REQUEST,
             )
             print(response_str)
             if response_str is None:
@@ -297,6 +304,37 @@ Output XML, ensuring a single root tag `<assessment>`:
                                 )
                         else:
                             text_for_llm_prompt += f"Could not read text file content. Error: {text_content}. "
+                elif ext == ".docx":
+                    if file_size_bytes > (
+                        config.MAX_FILE_SIZE_FOR_FULL_PROCESSING_MB * 1024 * 1024
+                    ):
+                        text_for_llm_prompt += (
+                            "DOCX file is too large for full content processing. "
+                        )
+                        process_content = False
+                    if process_content:
+                        success, docx_text_content = TextAnalyzer.extract_from_docx(
+                            self.file_path, config.MAX_EXTRACTED_TEXT_SIZE_KB
+                        )
+                        if success:
+                            if (
+                                docx_text_content
+                                and len(docx_text_content.strip())
+                                >= config.MIN_MEANINGFUL_TEXT_LENGTH
+                            ):
+                                text_for_llm_prompt += (
+                                    f"Extracted text from Word DOCX (up to {config.MAX_EXTRACTED_TEXT_SIZE_KB}KB):\n```\n"
+                                    f"{docx_text_content.strip()}\n```\n"
+                                )
+                                meaningful_text_extracted = True
+                            else:
+                                text_for_llm_prompt += (
+                                    "DOCX text extraction succeeded but content was too short to be meaningful. "
+                                )
+                        else:
+                            text_for_llm_prompt += (
+                                f"Could not extract text from DOCX. Error: {docx_text_content}. "
+                            )
 
                 elif ImageAnalyzer.is_image_file(self.file_path):
                     if file_size_bytes > (
@@ -422,6 +460,289 @@ Output XML, ensuring a single root tag `<assessment>`:
         self.llm_helper.update_context(f"File summary: {self.file_summary}")
         return self.file_summary
 
+    def _normalize_tool_path(self, raw_path: Any) -> str:
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ValueError("Path must be a non-empty string.")
+        return os.path.abspath(os.path.expanduser(raw_path.strip()))
+
+    def _tool_list_directory(
+        self, path: str, include_hidden: bool = False, limit: int = 50
+    ) -> Dict[str, Any]:
+        try:
+            normalized_path = self._normalize_tool_path(path)
+        except ValueError as e:
+            return {"error": str(e)}
+
+        if not os.path.exists(normalized_path):
+            return {"error": f"Path does not exist: {normalized_path}"}
+        if not os.path.isdir(normalized_path):
+            return {"error": f"Path is not a directory: {normalized_path}"}
+
+        try:
+            requested_limit = int(limit)
+        except (TypeError, ValueError):
+            requested_limit = 50
+
+        requested_limit = max(1, min(requested_limit, config.MAX_TOOL_DIRECTORY_ENTRIES))
+        entries = []
+
+        try:
+            with os.scandir(normalized_path) as iterator:
+                sorted_entries = sorted(iterator, key=lambda item: item.name.lower())
+                for entry in sorted_entries:
+                    if not include_hidden and entry.name.startswith("."):
+                        continue
+                    entry_type = (
+                        "directory"
+                        if entry.is_dir(follow_symlinks=False)
+                        else "file"
+                        if entry.is_file(follow_symlinks=False)
+                        else "other"
+                    )
+                    entries.append(
+                        {
+                            "name": entry.name,
+                            "path": entry.path,
+                            "type": entry_type,
+                        }
+                    )
+                    if len(entries) >= requested_limit:
+                        break
+        except OSError as e:
+            return {
+                "error": f"Unable to list directory '{normalized_path}': {str(e)}",
+            }
+
+        return {
+            "path": normalized_path,
+            "entries": entries,
+            "returned_count": len(entries),
+            "limit": requested_limit,
+        }
+
+    def _tool_find_paths(
+        self,
+        search_paths: Any,
+        query: str = "",
+        find_type: str = "both",
+        max_depth: int = 3,
+        limit: int = 50,
+        include_hidden: bool = False,
+    ) -> Dict[str, Any]:
+        if isinstance(search_paths, str):
+            raw_paths = [search_paths]
+        elif isinstance(search_paths, list):
+            raw_paths = search_paths
+        else:
+            return {"error": "search_paths must be a string or list of strings."}
+
+        normalized_paths = []
+        for candidate in raw_paths:
+            try:
+                normalized_candidate = self._normalize_tool_path(candidate)
+            except ValueError:
+                continue
+            if os.path.isdir(normalized_candidate):
+                normalized_paths.append(normalized_candidate)
+
+        if not normalized_paths:
+            return {"error": "No valid searchable directories provided in search_paths."}
+
+        normalized_find_type = str(find_type).strip().lower()
+        if normalized_find_type not in {"file", "directory", "both"}:
+            return {"error": "find_type must be one of: file, directory, both."}
+
+        try:
+            requested_depth = int(max_depth)
+        except (TypeError, ValueError):
+            requested_depth = 3
+        requested_depth = max(0, min(requested_depth, config.MAX_TOOL_FIND_DEPTH))
+
+        try:
+            requested_limit = int(limit)
+        except (TypeError, ValueError):
+            requested_limit = 50
+        requested_limit = max(1, min(requested_limit, config.MAX_TOOL_FIND_RESULTS))
+
+        query_terms = [
+            term.strip().lower()
+            for term in re.split(r"[,\n]+", str(query))
+            if term.strip()
+        ]
+
+        def matches(name: str) -> bool:
+            if not query_terms:
+                return True
+            lowered_name = name.lower()
+            return any(term in lowered_name for term in query_terms)
+
+        seen_paths = set()
+        results = []
+        truncated = False
+        stop_search = False
+
+        for root_path in normalized_paths:
+            for current_path, dirs, files in os.walk(root_path):
+                relative_path = os.path.relpath(current_path, root_path)
+                current_depth = (
+                    0 if relative_path == "." else relative_path.count(os.sep) + 1
+                )
+                if current_depth > requested_depth:
+                    dirs[:] = []
+                    continue
+
+                if not include_hidden:
+                    dirs[:] = [d for d in dirs if not d.startswith(".")]
+                    files = [f for f in files if not f.startswith(".")]
+
+                if normalized_find_type in {"directory", "both"}:
+                    for dir_name in dirs:
+                        if not matches(dir_name):
+                            continue
+                        matched_path = os.path.join(current_path, dir_name)
+                        if matched_path in seen_paths:
+                            continue
+                        seen_paths.add(matched_path)
+                        results.append({"path": matched_path, "type": "directory"})
+                        if len(results) >= requested_limit:
+                            truncated = True
+                            stop_search = True
+                            break
+                    if stop_search:
+                        break
+
+                if normalized_find_type in {"file", "both"}:
+                    for file_name in files:
+                        if not matches(file_name):
+                            continue
+                        matched_path = os.path.join(current_path, file_name)
+                        if matched_path in seen_paths:
+                            continue
+                        seen_paths.add(matched_path)
+                        results.append({"path": matched_path, "type": "file"})
+                        if len(results) >= requested_limit:
+                            truncated = True
+                            stop_search = True
+                            break
+                    if stop_search:
+                        break
+            if stop_search:
+                break
+
+        return {
+            "search_paths": normalized_paths,
+            "query_terms": query_terms,
+            "find_type": normalized_find_type,
+            "max_depth": requested_depth,
+            "limit": requested_limit,
+            "results": results,
+            "returned_count": len(results),
+            "truncated": truncated,
+        }
+
+    def _build_filesystem_tools(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_directory",
+                    "description": "List files and folders in a directory.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Absolute path or ~/ path to a directory.",
+                            },
+                            "include_hidden": {
+                                "type": "boolean",
+                                "description": "Whether hidden entries should be included.",
+                                "default": False,
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum number of entries to return.",
+                                "minimum": 1,
+                                "maximum": config.MAX_TOOL_DIRECTORY_ENTRIES,
+                                "default": 50,
+                            },
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "find_paths",
+                    "description": (
+                        "Find files and/or folders under one or more directories by keyword."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "search_paths": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Directories to search within.",
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": "Comma-separated keywords to match in names.",
+                                "default": "",
+                            },
+                            "find_type": {
+                                "type": "string",
+                                "enum": ["file", "directory", "both"],
+                                "default": "both",
+                            },
+                            "max_depth": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": config.MAX_TOOL_FIND_DEPTH,
+                                "default": 3,
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": config.MAX_TOOL_FIND_RESULTS,
+                                "default": 50,
+                            },
+                            "include_hidden": {
+                                "type": "boolean",
+                                "default": False,
+                            },
+                        },
+                        "required": ["search_paths"],
+                    },
+                },
+            },
+        ]
+
+    def _handle_filesystem_tool_call(
+        self, tool_name: str, arguments: Dict[str, Any]
+    ) -> str:
+        if tool_name == "list_directory":
+            result = self._tool_list_directory(
+                path=arguments.get("path", ""),
+                include_hidden=bool(arguments.get("include_hidden", False)),
+                limit=arguments.get("limit", 50),
+            )
+            return json.dumps(result, ensure_ascii=True)
+
+        if tool_name == "find_paths":
+            result = self._tool_find_paths(
+                search_paths=arguments.get("search_paths", []),
+                query=arguments.get("query", ""),
+                find_type=arguments.get("find_type", "both"),
+                max_depth=arguments.get("max_depth", 3),
+                limit=arguments.get("limit", 50),
+                include_hidden=bool(arguments.get("include_hidden", False)),
+            )
+            return json.dumps(result, ensure_ascii=True)
+
+        return json.dumps({"error": f"Unknown tool: {tool_name}"}, ensure_ascii=True)
+
     def _rank_filenames_by_keywords(self, filenames, keywords_str):
         if not keywords_str or not filenames:
             return filenames
@@ -494,6 +815,21 @@ Output XML, ensuring a single root tag `<assessment>`:
         if os.path.isdir(self.trash_dir) and self.trash_dir not in top_level_folders:
             top_level_folders.append(self.trash_dir)
         top_level_folders_str = "\n".join(sorted(list(set(top_level_folders))))
+        tools_for_step3 = None
+        tool_handler_for_step3 = None
+        tool_usage_note = ""
+        if (
+            config.ALLOW_LLM_TOOL_CALLS
+            and self.ai_settings.get("provider") in {"openai", "ollama"}
+        ):
+            tools_for_step3 = self._build_filesystem_tools()
+            tool_handler_for_step3 = self._handle_filesystem_tool_call
+            tool_usage_note = (
+                "\nYou may call tools to inspect directories and search files/folders before deciding.\n"
+                "- Use `list_directory` to inspect contents of a directory.\n"
+                "- Use `find_paths` to search for matching files/folders under one or more paths.\n"
+                "Use tool calls when needed, then return only the requested XML."
+            )
 
         user_prompt_content = f"""
 {self.custom_instruction_prompt_addition}
@@ -507,6 +843,7 @@ Available top-level user folders (and Trash) to consider for initiating search:
 ---
 {top_level_folders_str[:2000]} 
 ---
+{tool_usage_note}
 Tasks:
 1.  **Candidate Search Paths:** Suggest initial candidate top-level folders (comma-separated full paths from the list) to search within. If Trash seems appropriate, include '{config.TRASH_DESTINATION_IDENTIFIER}'.
 2.  **Folder Keywords:** Generate relevant folder search keywords. Consider the file's nature. Include singular/plural forms. Do NOT use file extensions.
@@ -534,6 +871,8 @@ Output XML, ensuring a single root tag `<search_parameters>`:
             "search_parameters",
             max_tokens_for_call=config.MAX_TOKENS_STEP3,
             step_name="Step 3",
+            tools=tools_for_step3,
+            tool_handler=tool_handler_for_step3,
         )
 
         if parsed_xml is not None:
@@ -597,44 +936,23 @@ Output XML, ensuring a single root tag `<search_parameters>`:
         )
 
         if folder_keywords_str:
-            opts = command_utils.build_keyword_options(folder_keywords_str)
-            if opts:
-                cmd = command_utils.build_find_command_parts(
-                    actual_search_paths,
-                    opts,
-                    find_type="d",
-                    excluded_patterns=config.EXCLUDED_DIRS_FIND_PATTERNS,
-                    max_depth=config.MAX_DEPTH_STEP5,
-                )
-                if cmd:
-                    success, stdout, _ = command_utils.run_shell_command(cmd)
-                    if success and stdout:
-                        [
-                            results["folder_matches"].add(os.path.normpath(l.strip()))
-                            for l in stdout.splitlines()
-                            if l.strip()
-                        ]
+            res = file_utils.fast_find(
+                actual_search_paths,
+                folder_keywords_str,
+                "d",
+                max_depth=config.MAX_DEPTH_STEP5
+            )
+            results["folder_matches"].update(res)
+
         if file_keywords_str:
-            opts = command_utils.build_keyword_options(file_keywords_str)
-            if opts:
-                cmd = command_utils.build_find_command_parts(
-                    actual_search_paths,
-                    opts,
-                    find_type="f",
-                    excluded_patterns=config.EXCLUDED_DIRS_FIND_PATTERNS,
-                    print0=True,
-                    max_depth=config.MAX_DEPTH_STEP5,
-                )
-                if cmd:
-                    success, stdout, _ = command_utils.run_shell_command(cmd)
-                    if success and stdout:
-                        [
-                            results["file_matches"].add(
-                                os.path.dirname(os.path.normpath(fp.strip()))
-                            )
-                            for fp in stdout.split("\0")
-                            if fp.strip()
-                        ]
+            res = file_utils.fast_find(
+                actual_search_paths,
+                file_keywords_str,
+                "f",
+                max_depth=config.MAX_DEPTH_STEP5
+            )
+            results["file_matches"].update(res)
+
         return results
 
     def _score_and_rank_found_paths(self, found_paths_dict):
@@ -693,6 +1011,11 @@ Output XML, ensuring a single root tag `<search_parameters>`:
             )
             if item.get("type") == "trash_bin":
                 desc += " (User's Trash)"
+            else:
+                samples = file_utils.get_sample_files(item["path"], max_samples=3)
+                if samples:
+                    desc += f" [Samples: {', '.join(samples)}]"
+
             # Add confidence if available from pre-filtering (though pre-filter LLM is removed, source might still be useful)
             if (
                 "source" in item and item["source"] != "heuristic_ranked_all"
@@ -1325,6 +1648,29 @@ Output XML, root tag `<final_action>`:
                 print(
                     f"\nUser provided hint. Re-running Step 6 (Attempt {hint_retries_count + 1}/{config.MAX_HINT_RETRIES + 1})."
                 )
+
+                try:
+                    new_folders = file_utils.fast_find(
+                        fs_search_paths,
+                        user_provided_hint_for_step6,
+                        "d",
+                        max_depth=config.MAX_DEPTH_STEP5
+                    )
+
+                    if new_folders:
+                        print(f"Hint triggered finding {len(new_folders)} new folders. Adding to candidates.")
+                        existing_paths = {p["path"] for p in processed_paths_for_step6}
+                        for p in new_folders:
+                            if p not in existing_paths:
+                                processed_paths_for_step6.append({
+                                    "path": p,
+                                    "confidence": 0.8,
+                                    "type": "directory",
+                                    "source": "hint_search"
+                                })
+                except Exception as e:
+                    print(f"Error during hint-based search: {e}")
+
                 parsing_error_occurred_critical_step = False
                 continue
             else:

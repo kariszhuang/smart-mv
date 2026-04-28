@@ -13,6 +13,8 @@
 - **API key persistence** with OS keyring and explicit plaintext fallback.
 - **Faster sorting flow** with deterministic trash shortcuts and depth-limited search.
 - **Provider/model settings can be changed anytime** from CLI.
+- **Richer document understanding** with native `.docx` text extraction.
+- **Filesystem tool-calling (OpenAI/Ollama)** so AI can list directories and find files/folders during destination planning.
 
 ## Quick start (uv-first)
 

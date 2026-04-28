@@ -3,7 +3,8 @@ Text analyzer functionality for SMV.
 """
 
 import os
-import base64
+import zipfile
+import xml.etree.ElementTree as ET
 from typing import Tuple, Optional
 
 
@@ -75,6 +76,111 @@ class TextAnalyzer:
             return True, images
         except Exception as e:
             return False, [f"Error converting PDF to image: {str(e)}"]
+
+    @staticmethod
+    def extract_from_docx(file_path: str, max_size_kb: int = 100) -> Tuple[bool, str]:
+        """
+        Extract text from a DOCX file by reading WordprocessingML XML parts.
+
+        Args:
+            file_path (str): Path to the DOCX file.
+            max_size_kb (int): Maximum size of extracted text in KB.
+
+        Returns:
+            Tuple[bool, str]: (success, extracted_text)
+        """
+        namespaces = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        max_bytes = max_size_kb * 1024
+        extracted_parts = []
+        current_size = 0
+
+        def append_text(text: str) -> bool:
+            nonlocal current_size
+            if not text:
+                return True
+            encoded = text.encode("utf-8")
+            remaining = max_bytes - current_size
+            if remaining <= 0:
+                return False
+            if len(encoded) > remaining:
+                truncated = encoded[:remaining].decode("utf-8", errors="ignore").strip()
+                if truncated:
+                    extracted_parts.append(truncated)
+                extracted_parts.append(f"...(truncated at {max_size_kb}KB limit)...")
+                current_size = max_bytes
+                return False
+
+            extracted_parts.append(text)
+            current_size += len(encoded)
+            return True
+
+        try:
+            with zipfile.ZipFile(file_path) as docx_zip:
+                zip_names = set(docx_zip.namelist())
+                if "word/document.xml" not in zip_names:
+                    return False, "Invalid DOCX: missing word/document.xml"
+
+                ordered_parts = ["word/document.xml"]
+                ordered_parts.extend(
+                    sorted(
+                        name
+                        for name in zip_names
+                        if name.startswith("word/header") and name.endswith(".xml")
+                    )
+                )
+                ordered_parts.extend(
+                    sorted(
+                        name
+                        for name in zip_names
+                        if name.startswith("word/footer") and name.endswith(".xml")
+                    )
+                )
+                ordered_parts.extend(
+                    name
+                    for name in ("word/footnotes.xml", "word/endnotes.xml")
+                    if name in zip_names
+                )
+
+                stop_extraction = False
+                for part_name in ordered_parts:
+                    if part_name not in zip_names:
+                        continue
+
+                    with docx_zip.open(part_name) as xml_file:
+                        xml_content = xml_file.read()
+
+                    try:
+                        root = ET.fromstring(xml_content)
+                    except ET.ParseError:
+                        continue
+
+                    if part_name != "word/document.xml":
+                        if not append_text(f"[{os.path.basename(part_name)}]"):
+                            stop_extraction = True
+                            break
+
+                    for paragraph in root.findall(".//w:p", namespaces):
+                        text_runs = []
+                        for text_node in paragraph.findall(".//w:t", namespaces):
+                            if text_node.text:
+                                text_runs.append(text_node.text)
+                        paragraph_text = "".join(text_runs).strip()
+                        if paragraph_text and not append_text(paragraph_text):
+                            stop_extraction = True
+                            break
+
+                    if stop_extraction:
+                        break
+
+            if not extracted_parts:
+                return False, "No text extracted from DOCX"
+
+            return True, "\n\n".join(extracted_parts)
+
+        except zipfile.BadZipFile:
+            return False, "Invalid DOCX file (not a readable ZIP package)"
+        except Exception as e:
+            return False, f"Error extracting text from DOCX: {str(e)}"
 
     @staticmethod
     def get_file_type_description(file_path: str) -> str:

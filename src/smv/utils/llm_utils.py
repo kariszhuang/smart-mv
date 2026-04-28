@@ -4,10 +4,11 @@ LLM interaction utilities for SMV.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import xml.etree.ElementTree as ET
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from openai import OpenAI
 
@@ -72,19 +73,99 @@ class LLMHelper:
         messages: List[Dict[str, Any]],
         temperature: float,
         max_tokens: int,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_handler: Optional[Callable[[str, Dict[str, Any]], str]] = None,
+        max_tool_rounds: int = 0,
     ) -> Optional[str]:
         if self.client is None:
             print("Error: OpenAI-compatible client is not initialized.")
             return None
 
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        content = response.choices[0].message.content
-        return content.strip() if content else None
+        conversation_messages: List[Dict[str, Any]] = list(messages)
+        remaining_tool_rounds = max(0, max_tool_rounds)
+
+        while True:
+            kwargs: Dict[str, Any] = {
+                "model": self.model_name,
+                "messages": conversation_messages,
+                "temperature": temperature,
+            }
+            if self.provider_id != "ollama":
+                kwargs["max_tokens"] = max_tokens
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+
+            response = self.client.chat.completions.create(**kwargs)
+            message = response.choices[0].message
+            content = message.content.strip() if message.content else None
+            tool_calls = list(getattr(message, "tool_calls", None) or [])
+
+            if not tool_calls:
+                return content
+
+            if tool_handler is None:
+                print("LLM requested tool calls, but no tool handler was provided.")
+                return content
+
+            if remaining_tool_rounds <= 0:
+                print("Maximum tool-call rounds reached; returning latest response.")
+                return content
+
+            serialized_tool_calls = []
+            for tool_call in tool_calls:
+                function_info = getattr(tool_call, "function", None)
+                serialized_tool_calls.append(
+                    {
+                        "id": getattr(tool_call, "id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": getattr(function_info, "name", ""),
+                            "arguments": getattr(function_info, "arguments", "{}"),
+                        },
+                    }
+                )
+
+            conversation_messages.append(
+                {
+                    "role": "assistant",
+                    "content": message.content or "",
+                    "tool_calls": serialized_tool_calls,
+                }
+            )
+
+            for tool_call in tool_calls:
+                function_info = getattr(tool_call, "function", None)
+                tool_name = getattr(function_info, "name", "")
+                raw_arguments = getattr(function_info, "arguments", "") or "{}"
+                tool_result: str
+
+                try:
+                    parsed_arguments = json.loads(raw_arguments)
+                    if not isinstance(parsed_arguments, dict):
+                        parsed_arguments = {"value": parsed_arguments}
+                except json.JSONDecodeError as e:
+                    tool_result = json.dumps(
+                        {
+                            "error": f"Invalid tool arguments JSON for '{tool_name}': {str(e)}"
+                        }
+                    )
+                else:
+                    handler_result = tool_handler(tool_name, parsed_arguments)
+                    if isinstance(handler_result, str):
+                        tool_result = handler_result
+                    else:
+                        tool_result = json.dumps(handler_result, ensure_ascii=True)
+
+                conversation_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": getattr(tool_call, "id", ""),
+                        "content": tool_result,
+                    }
+                )
+
+            remaining_tool_rounds -= 1
 
     def _call_anthropic(
         self,
@@ -186,14 +267,32 @@ class LLMHelper:
         messages: List[Dict[str, Any]],
         temperature: float = 0.1,
         max_tokens: int = 1000,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_handler: Optional[Callable[[str, Dict[str, Any]], str]] = None,
+        max_tool_rounds: int = 0,
     ) -> Optional[str]:
         print(f"\n>>> Calling LLM ({self.provider_id}/{self.model_name})...")
         try:
             if self.provider_id in {"ollama", "openai"}:
-                content = self._call_openai_compatible(messages, temperature, max_tokens)
+                content = self._call_openai_compatible(
+                    messages,
+                    temperature,
+                    max_tokens,
+                    tools=tools,
+                    tool_handler=tool_handler,
+                    max_tool_rounds=max_tool_rounds,
+                )
             elif self.provider_id == "anthropic":
+                if tools:
+                    print(
+                        "Warning: Tool calling is currently only enabled for OpenAI-compatible providers."
+                    )
                 content = self._call_anthropic(messages, temperature, max_tokens)
             elif self.provider_id == "gemini":
+                if tools:
+                    print(
+                        "Warning: Tool calling is currently only enabled for OpenAI-compatible providers."
+                    )
                 content = self._call_gemini(messages, temperature, max_tokens)
             else:
                 raise ValueError(f"Unsupported provider '{self.provider_id}'")
