@@ -16,12 +16,12 @@
 - **Richer document understanding** with native `.docx` text extraction.
 - **Filesystem tool-calling (OpenAI/Ollama)** so AI can list directories and find files/folders during destination planning.
 
-## Quick start (uv-first)
+## Quick start
 
 ### Install
 
 ```bash
-uv tool install smart-mv
+pip install smart-mv
 ```
 
 or from source:
@@ -29,14 +29,14 @@ or from source:
 ```bash
 git clone https://github.com/kariszhuang/smart-mv.git
 cd smart-mv
-uv sync
-uv run smv --version
+pip install -e .
+smv --version
 ```
 
 ### Configure AI once
 
 ```bash
-uv run smv ai setup
+smv ai setup
 ```
 
 This interactive setup lets you choose provider, model, base URL (where applicable), and API key storage.
@@ -44,35 +44,37 @@ This interactive setup lets you choose provider, model, base URL (where applicab
 ### Organize a file
 
 ```bash
-uv run smv /path/to/file.pdf
+smv /path/to/file.pdf
 ```
 
 ## AI configuration commands
 
 ```bash
 # Show current profile
-uv run smv ai show
+smv ai show
 
 # Interactive reconfiguration
-uv run smv ai setup
+smv ai setup
 
 # Set provider/model/base URL directly
-uv run smv ai set-provider ollama
-uv run smv ai set-model gemma3:12b
-uv run smv ai set-base-url http://localhost:11434/v1
+smv ai set-provider ollama
+smv ai set-model gemma3:12b
+smv ai set-base-url http://localhost:11434/v1
 
 # Set API key (keyring by default; falls back to plaintext if needed)
-uv run smv ai set-api-key --storage keyring
+smv ai set-api-key --storage keyring
 
 # List suggested/discovered models
-uv run smv ai list-models --provider ollama
+smv ai list-models --provider ollama
 ```
 
 ## Development
 
 ```bash
-uv sync
-uv run python -m unittest discover -s tests -q
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+python -m unittest discover -s tests -q
 ```
 
 ## Python version
